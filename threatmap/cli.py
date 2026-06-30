@@ -2,6 +2,7 @@
 threatmap CLI entry point.
 """
 import os
+import random
 import sys
 from typing import List, Optional, Tuple
 
@@ -15,7 +16,8 @@ from threatmap.detect import detect_format
 from threatmap.models.resource import Resource
 from threatmap.models.threat import Severity, Threat
 from threatmap.parsers import cloudformation, kubernetes, terraform
-from threatmap.reporters import json_reporter, markdown
+from threatmap.reporters import html_reporter, json_reporter, markdown, sarif_reporter
+from threatmap import api
 
 console = Console(stderr=True)
 
@@ -32,7 +34,23 @@ _BANNER = r"""
 def _print_banner(no_color: bool = False) -> None:
     c = Console(stderr=True, no_color=no_color)
     c.print(f"[bold red]{_BANNER}[/bold red]")
-    c.print(f"  [dim]by Bogdan Ticu[/dim]   [dim]v{__version__}[/dim]\n")
+    c.print(f"  [dim]by Bogdan Ticu[/dim]   [dim]v{__version__}[/dim]")
+    
+    joke = random.choice(_JOKES)
+    c.print(f"  [italic cyan]\"{joke}\"[/italic cyan]\n")
+
+_JOKES = [
+    "A SQL query walks into a bar, walks up to two tables, and asks: 'Can I join you?'",
+    "Why do security researchers prefer dark mode? Because light attracts bugs.",
+    "The 'S' in IoT stands for Security.",
+    "STRIDE: Because 'winging it' isn't a security control.",
+    "If you think compliance is expensive, try a data breach.",
+    "Knock, knock. Who's there? (Long silence...) Java.",
+    "Encryption: Turning your secrets into someone else's headache.",
+    "My password is the last 8 digits of Pi.",
+    "Why did the attacker cross the road? To get to the other (server) side.",
+    "There are only 10 types of people: those who understand binary, and those who don't."
+]
 
 _SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 _SEVERITY_COLORS = {
@@ -41,6 +59,14 @@ _SEVERITY_COLORS = {
     "MEDIUM": "yellow",
     "LOW": "green",
     "INFO": "dim",
+}
+
+_SEVERITY_ASCII = {
+    "CRITICAL": "[CRITICAL]",
+    "HIGH": "[HIGH]",
+    "MEDIUM": "[MEDIUM]",
+    "LOW": "[LOW]",
+    "INFO": "[INFO]",
 }
 
 
@@ -74,20 +100,21 @@ def _parse_files(file_paths: List[str]) -> List[Resource]:
     return resources
 
 
-def _print_summary_table(threats: List[Threat], no_color: bool) -> None:
+def _print_summary_table(threats: List[Threat], no_color: bool, ascii_mode: bool = False) -> None:
     """Print a rich summary table to stderr."""
     tbl = Table(title="Threat Summary", show_header=True, header_style="bold")
     tbl.add_column("ID", style="dim", width=7)
-    tbl.add_column("Severity", width=10)
+    tbl.add_column("Severity", width=12 if ascii_mode else 10)
     tbl.add_column("STRIDE", width=25)
     tbl.add_column("Resource", width=30)
     tbl.add_column("Description")
 
     for t in threats:
         color = _SEVERITY_COLORS.get(t.severity.value, "") if not no_color else ""
+        sev_val = _SEVERITY_ASCII.get(t.severity.value, t.severity.value) if ascii_mode else t.severity.value
         tbl.add_row(
             t.threat_id,
-            f"[{color}]{t.severity.value}[/{color}]" if color else t.severity.value,
+            f"[{color}]{sev_val}[/{color}]" if color else sev_val,
             t.stride_category.value,
             t.resource_name,
             t.description[:80] + "…" if len(t.description) > 80 else t.description,
@@ -100,19 +127,32 @@ def _count_by_severity(threats: List[Threat]) -> dict:
     return {s.value: sum(1 for t in threats if t.severity == s) for s in Severity}
 
 
-@click.group()
-def cli():
-    """threatmap — static IaC threat modeler using STRIDE."""
+@click.group(context_settings=dict(help_option_names=["-h", "--help"]))
+@click.version_option(__version__)
+@click.pass_context
+def cli(ctx):
+    """threatmap — static IaC threat modeler using STRIDE, MITRE, and PASTA."""
+    if ctx.invoked_subcommand is None:
+        _print_banner()
+        click.echo(ctx.get_help())
+        ctx.exit()
 
 
 @cli.command()
 @click.argument("paths", nargs=-1, required=True, type=click.Path())
 @click.option(
     "--format", "output_format",
-    type=click.Choice(["markdown", "json"], case_sensitive=False),
+    type=click.Choice(["markdown", "json", "sarif", "html"], case_sensitive=False),
     default="markdown",
     show_default=True,
     help="Output format.",
+)
+@click.option(
+    "--framework",
+    type=click.Choice(["stride", "mitre", "pasta"], case_sensitive=False),
+    default="stride",
+    show_default=True,
+    help="Threat modeling framework.",
 )
 @click.option(
     "--output", "-o",
@@ -133,6 +173,12 @@ def cli():
     help="Print terminal summary table only, do not write a full report.",
 )
 @click.option(
+    "--ascii",
+    is_flag=True,
+    default=False,
+    help="Use ASCII-only severity indicators (no emojis).",
+)
+@click.option(
     "--no-color",
     is_flag=True,
     default=False,
@@ -141,14 +187,17 @@ def cli():
 def scan(
     paths: Tuple[str, ...],
     output_format: str,
+    framework: str,
     output: Optional[str],
     fail_on: Optional[str],
     summary: bool,
+    ascii: bool,
     no_color: bool,
 ) -> None:
     """
-    Scan IaC files or directories for STRIDE threats.
+    Scan IaC files or directories for infrastructure threats.
 
+    Supports STRIDE, MITRE ATT&CK, and PASTA frameworks.
     PATHS can be files or directories; multiple values accepted.
     """
     _print_banner(no_color)
@@ -177,8 +226,9 @@ def scan(
     stderr.print(f"Found [bold]{len(resources)}[/bold] resources.")
 
     # 2. Analyze
-    with stderr.status("[bold]Running STRIDE analysis…"):
-        threats = engine.run(resources)
+    framework_display = framework.upper()
+    with stderr.status(f"[bold]Running {framework_display} analysis…"):
+        threats = engine.run(resources, framework=framework.lower())
 
     counts = _count_by_severity(threats)
     stderr.print(
@@ -192,17 +242,22 @@ def scan(
 
     # 3. Print terminal summary table when writing to file, or when --summary is requested
     if summary or output:
-        _print_summary_table(threats, no_color)
+        _print_summary_table(threats, no_color, ascii_mode=ascii)
 
     # 4. Generate report
     if not summary:
-        if output_format.lower() == "json":
+        fmt = output_format.lower()
+        if fmt == "json":
             report_content = json_reporter.build_report(resources, threats, source_label)
+        elif fmt == "sarif":
+            report_content = sarif_reporter.build_report(resources, threats, source_label)
+        elif fmt == "html":
+            report_content = html_reporter.build_report(resources, threats, source_label)
         else:
-            report_content = markdown.build_report(resources, threats, source_label)
+            report_content = markdown.build_report(resources, threats, source_label, ascii_mode=ascii)
 
         if output:
-            with open(output, "w") as fh:
+            with open(output, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(report_content)
             stderr.print(f"Report written to [bold]{output}[/bold]")
         else:
@@ -223,8 +278,64 @@ def scan(
     sys.exit(0)
 
 
+@cli.command()
+@click.option(
+    "--host",
+    type=str,
+    default="127.0.0.1",
+    show_default=True,
+    help="Bind API server to this host.",
+)
+@click.option(
+    "--port",
+    type=int,
+    default=8000,
+    show_default=True,
+    help="Bind API server to this port.",
+)
+@click.option(
+    "--reload",
+    is_flag=True,
+    default=False,
+    help="Enable auto-reload on code changes (development only).",
+)
+def serve(host: str, port: int, reload: bool) -> None:
+    """Start REST API server."""
+    import uvicorn
+
+    stderr = Console(stderr=True)
+    stderr.print(f"[bold]Starting threatmap API server on {host}:{port}[/bold]")
+    stderr.print(f"[dim]API docs available at http://{host}:{port}/docs[/dim]\n")
+
+    uvicorn.run(
+        api.app,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info"
+    )
+
+
+def _force_utf8_output() -> None:
+    """
+    Ensure stdout/stderr can encode the report's emoji, arrows, and em-dashes.
+
+    On Windows the console defaults to a legacy code page (cp1252/cp850) that
+    cannot encode the severity emoji or characters like '→'/'—', so printing a
+    report straight to the terminal raises UnicodeEncodeError. Reconfiguring the
+    streams to UTF-8 is a no-op when they are already UTF-8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            # Stream was replaced (e.g. test capture) or cannot be reconfigured.
+            pass
+
+
 def main():
-    cli()
+    _force_utf8_output()
+    cli(obj={})
 
 
 if __name__ == "__main__":

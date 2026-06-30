@@ -1,25 +1,134 @@
-from typing import List
+import os
+from typing import Dict, List, Optional
 
-from threatmap.analyzers import aws, azure, gcp, kubernetes
+import yaml
+
+from threatmap.analyzers import aws, azure, gcp, kubernetes, mitre, pasta
 from threatmap.models.resource import Resource
-from threatmap.models.threat import Threat
+from threatmap.models.threat import Severity, StrideCategory, Threat
 
-ANALYZERS = [aws.analyze, azure.analyze, gcp.analyze, kubernetes.analyze]
+# STRIDE framework analyzers (default)
+STRIDE_ANALYZERS = [aws.analyze, azure.analyze, gcp.analyze, kubernetes.analyze]
+
+# Framework-specific analyzers
+FRAMEWORK_ANALYZERS = {
+    "stride": STRIDE_ANALYZERS,
+    "mitre": [mitre.analyze],
+    "pasta": [pasta.analyze],
+}
 
 _SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
 
-def run(resources: List[Resource]) -> List[Threat]:
+def _run_custom_rules(resources: List[Resource]) -> List[Threat]:
+    """Load and run rules from a 'threatmap_rules.yaml' if it exists."""
+    custom_threats = []
+    rule_file = "threatmap_rules.yaml"
+    if not os.path.exists(rule_file):
+        return []
+
+    try:
+        with open(rule_file, "r") as f:
+            config = yaml.safe_load(f)
+            rules = config.get("rules", [])
+    except Exception:
+        return []
+
+    for rule in rules:
+        target_type = rule.get("resource_type")
+        prop = rule.get("property")
+        expected = rule.get("expected")
+        
+        for r in resources:
+            if r.resource_type == target_type or target_type == "*":
+                val = r.properties.get(prop)
+                if val != expected:
+                    custom_threats.append(Threat(
+                        threat_id="",
+                        stride_category=StrideCategory(rule.get("stride", "Information Disclosure")),
+                        severity=Severity(rule.get("severity", "MEDIUM")),
+                        resource_name=r.name,
+                        resource_type=r.resource_type,
+                        description=rule.get("description", f"Custom rule violation for {r.name}"),
+                        mitigation=rule.get("mitigation", "Follow internal security standards."),
+                        trigger_property=prop,
+                        remediation=rule.get("remediation")
+                    ))
+    return custom_threats
+
+
+def _analyze_attack_paths(resources: List[Resource]) -> List[Threat]:
     """
-    Run all analyzers, deduplicate by (stride_category, resource_name, trigger_property),
-    sort by severity, and assign sequential threat IDs.
+    Graph-based analysis: trace paths from Internet to sensitive data.
+    Identifies 'chained' threats (Elevation of Privilege).
     """
+    threats = []
+    resource_map = {r.name: r for r in resources}
+    
+    # Identify internet-exposed compute
+    exposed_compute = [
+        r for r in resources 
+        if r.exposure == "public" and any(k in r.resource_type for k in ("instance", "lambda", "container", "Pod"))
+    ]
+    
+    for compute in exposed_compute:
+        for rel in compute.relationships:
+            # rel might be 'aws_s3_bucket.my_data'
+            target_name = rel.split(".")[-1]
+            target = resource_map.get(target_name)
+            
+            if target and any(k in target.resource_type for k in ("s3", "storage", "db", "sql")):
+                threats.append(Threat(
+                    threat_id="",
+                    stride_category=StrideCategory.ELEVATION_OF_PRIVILEGE,
+                    severity=Severity.HIGH,
+                    resource_name=compute.name,
+                    resource_type=compute.resource_type,
+                    description=f"Exposed compute '{compute.name}' can access data resource '{target.name}'. A compromise of this compute resource provides a direct path to sensitive data.",
+                    mitigation=f"Ensure least-privilege IAM roles for '{compute.name}' and use VPC endpoints for data access.",
+                    trigger_property="relationships",
+                    remediation=f"Restrict '{compute.name}' access to only required actions on '{target.name}'."
+                ))
+                
+    return threats
+
+
+def run(resources: List[Resource], framework: str = "stride") -> List[Threat]:
+    """
+    Run analyzers for selected threat modeling framework.
+    Assign sequential threat IDs and sort by severity.
+
+    Args:
+        resources: List of infrastructure resources to analyze
+        framework: Threat modeling framework (stride, mitre, pasta)
+    """
+    framework = framework.lower()
+    if framework not in ["stride", "mitre", "pasta"]:
+        raise ValueError(f"Invalid framework: {framework}. Use stride, mitre, or pasta.")
+
     all_threats: List[Threat] = []
     seen = set()
 
-    for fn in ANALYZERS:
+    # 1. Framework-specific Analyzers
+    analyzers = FRAMEWORK_ANALYZERS.get(framework, STRIDE_ANALYZERS)
+    for fn in analyzers:
         for t in fn(resources):
-            key = (t.stride_category, t.resource_name, t.trigger_property)
+            key = (t.resource_name, t.trigger_property, t.description[:50])
+            if key not in seen:
+                seen.add(key)
+                all_threats.append(t)
+
+    # 2. Custom Rules (only for STRIDE framework)
+    if framework == "stride":
+        for t in _run_custom_rules(resources):
+            key = (t.resource_name, t.trigger_property, t.description[:50])
+            if key not in seen:
+                seen.add(key)
+                all_threats.append(t)
+
+        # 3. Graph/Attack Path Analysis (only for STRIDE)
+        for t in _analyze_attack_paths(resources):
+            key = (t.resource_name, t.trigger_property, t.description[:50])
             if key not in seen:
                 seen.add(key)
                 all_threats.append(t)

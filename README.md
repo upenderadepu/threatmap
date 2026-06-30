@@ -1,14 +1,27 @@
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/517c5165-6780-4861-a1a3-aa092b6179e4" />
+
+<img width="606" height="156" alt="2026-03-25_12-36" src="https://github.com/user-attachments/assets/bde9ef53-7b76-42c1-b273-5b8c37b7d52a" />
+
+
+
+
+
 
 # threatmap
 
 
 [![CI](https://github.com/bogdanticu88/threatmap/actions/workflows/ci.yml/badge.svg)](https://github.com/bogdanticu88/threatmap/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-2.1.0-brightgreen)](https://github.com/bogdanticu88/threatmap/releases/tag/v2.1.0)
+[![PyPI](https://img.shields.io/pypi/v/threatmap.svg)](https://pypi.org/project/threatmap/)
 [![Python](https://img.shields.io/badge/python-3.9%20|%203.10%20|%203.11%20|%203.12-blue)](https://pypi.org/project/threatmap/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Offline](https://img.shields.io/badge/offline-no%20network%20calls-lightgrey)](https://github.com/bogdanticu88/threatmap)
+[![Docker](https://img.shields.io/badge/docker-bogdynn%2Fthreatmap-0db7ed?logo=docker&logoColor=white)](https://hub.docker.com/r/bogdynn/threatmap)
+[![STRIDE](https://img.shields.io/badge/STRIDE-73%20rules-ff9800)](https://github.com/bogdanticu88/threatmap#stride-rule-coverage)
+[![MITRE](https://img.shields.io/badge/MITRE%20ATT%26CK-11%20rules-ef4444)](https://github.com/bogdanticu88/threatmap#threat-modeling-frameworks)
+[![PASTA](https://img.shields.io/badge/PASTA-12%20rules-8b5cf6)](https://github.com/bogdanticu88/threatmap#threat-modeling-frameworks)
+[![GraphQL API](https://img.shields.io/badge/GraphQL-API-e535ab?logo=graphql&logoColor=white)](https://github.com/bogdanticu88/threatmap#quick-start)
+[![License: MIT](https://img.shields.io/badge/license-MIT-10b981)](LICENSE)
+[![Offline](https://img.shields.io/badge/offline-no%20network%20calls-9ca3af)](https://github.com/bogdanticu88/threatmap)
 
-Static IaC threat modeler that parses Terraform, CloudFormation, and Kubernetes manifests and produces a structured STRIDE threat model report with a data flow diagram. No network calls, no cloud credentials, fully offline.
+Static IaC threat modeler that parses Terraform, CloudFormation, and Kubernetes manifests and produces structured threat model reports using STRIDE, MITRE ATT&CK, or PASTA frameworks. No network calls, no cloud credentials, fully offline. Runs as a CLI, REST API, or containerized service.
 
 
 
@@ -16,9 +29,31 @@ Static IaC threat modeler that parses Terraform, CloudFormation, and Kubernetes 
 
 ## Quick Start
 
+**CLI:**
 ```bash
-pip install -e .
+pip install threatmap
 threatmap scan ./examples --output report.md --fail-on HIGH
+```
+
+**Docker:**
+```bash
+docker run -v $(pwd):/workspace bogdynn/threatmap:2.1.0 threatmap scan /workspace --output /workspace/report.md
+```
+
+**REST API Server:**
+```bash
+threatmap serve --host 0.0.0.0 --port 8000
+# Or via Docker:
+docker run -p 8000:8000 bogdynn/threatmap:2.1.0
+# API endpoints: /health, /version, /rules, /analyze
+```
+
+**GraphQL API:**
+```bash
+docker run -p 8000:8000 bogdynn/threatmap:2.1.0
+# GraphQL endpoint: http://localhost:8000/graphql
+# Queries: health, version, rules
+# Mutations: analyze(content, filename, framework)
 ```
 
 ---
@@ -35,14 +70,17 @@ threatmap scan ./examples --output report.md --fail-on HIGH
 
 ## Install
 
+Install from PyPI:
+
 ```bash
-pip install -e .
+pip install threatmap
 ```
 
-Or from requirements:
+Or for local development:
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/bogdanticu88/threatmap.git
+cd threatmap
 pip install -e .
 ```
 
@@ -62,6 +100,13 @@ Scan multiple paths and write a JSON report to a file:
 threatmap scan ./terraform/ ./k8s/ ./cloudformation/ --format json --output report.json
 ```
 
+Generate an interactive HTML report or a SARIF report for GitHub Security:
+
+```bash
+threatmap scan ./infra/ --format html --output report.html
+threatmap scan ./infra/ --format sarif --output report.sarif
+```
+
 CI gate — exit code 1 if any CRITICAL or HIGH threat is found:
 
 ```bash
@@ -73,6 +118,48 @@ Print a terminal summary table only, without writing a full report:
 ```bash
 threatmap scan ./infra/ --summary
 ```
+
+Use ASCII-only severity indicators (no emojis) for environments that don't support Unicode:
+
+```bash
+threatmap scan ./infra/ --ascii --output report.md
+```
+
+Analyze using different threat modeling frameworks:
+
+```bash
+# STRIDE (default)
+threatmap scan ./infra/ --framework stride
+
+# MITRE ATT&CK (maps to tactics and techniques)
+threatmap scan ./infra/ --framework mitre --format json
+
+# PASTA (asset-centric threat modeling)
+threatmap scan ./infra/ --framework pasta --format json
+```
+
+---
+
+## Threat Modeling Frameworks
+
+**STRIDE** (73 rules)
+- Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege
+- Threat-centric approach ideal for identifying attack surface
+- Provider-specific: AWS (22 rules), Azure (19 rules), GCP (15 rules), Kubernetes (17 rules)
+- Best for: Traditional threat modeling, security architecture reviews
+
+**MITRE ATT&CK** (11 rules, 14 tactics)
+- Maps infrastructure threats to real-world adversary tactics and techniques
+- Resource-aware technique selection for accurate TTP mapping
+- Tactics: Reconnaissance, Initial Access, Execution, Persistence, Privilege Escalation, Defense Evasion, Credential Access, Discovery, Collection, Command & Control, Exfiltration, Impact, Lateral Movement
+- Best for: Aligning with threat intelligence, incident response planning, red team exercises
+
+**PASTA** (12 rules, asset-centric)
+- Process for Attack Simulation and Threat Analysis
+- Asset-centric approach focusing on what needs protection
+- Asset types: Data, Identity, Compute, Network, Infrastructure
+- Threat actors: Internal, External, Misconfiguration, Supply Chain
+- Best for: Risk-based prioritization, asset protection strategies, supply chain threats
 
 ---
 
@@ -149,12 +236,33 @@ flowchart LR
 
 ---
 
-## How the Rules Work
+## Advanced Features (v2.1.0+)
 
-### Where rules live
+### Graph-based Attack Path Analysis
+`threatmap` now includes **Graph Intelligence** that traces relationships between resources. It automatically identifies "chained" threats where a compromise of one resource (e.g., an internet-exposed EC2) leads directly to another (e.g., a private S3 bucket), flagging these as **Elevation of Privilege** attack paths.
 
-Each cloud provider has its own analyzer module:
+### Custom YAML Rules
+You can define internal security requirements by creating a `threatmap_rules.yaml` in your project root.
 
+```yaml
+rules:
+  - resource_type: "aws_s3_bucket"
+    property: "force_destroy"
+    expected: false
+    stride: "Tampering"
+    severity: "MEDIUM"
+    description: "Production buckets should not have force_destroy enabled."
+    mitigation: "Set force_destroy = false."
+```
+
+### Remediation Hints
+Most findings now include a **remediation** field (visible in JSON, HTML, and SARIF reports) that provides the exact code snippet needed to fix the security issue.
+
+---
+
+### Architecture
+
+**STRIDE Analyzer** — Provider-specific threat rules:
 ```
 threatmap/analyzers/
 ├── aws.py         # 22 rules — S3, IAM, EC2, RDS, EKS, CloudTrail, KMS, Lambda
@@ -162,6 +270,20 @@ threatmap/analyzers/
 ├── gcp.py         # 15 rules — GCS, Firewall, Compute, Cloud SQL, GKE, IAM, KMS
 └── kubernetes.py  # 17 rules — workloads, RBAC, network, secrets
 ```
+
+**MITRE ATT&CK Analyzer** — 11 rules mapped to MITRE tactics:
+- Resource-aware technique selection
+- Supports: IAM, Storage, Network, Compute, Kubernetes, Databases
+- Provides tactic→technique mapping for threat intelligence alignment
+
+**PASTA Analyzer** — 12 rules with asset-centric focus:
+- Classifies resources by asset type (data, identity, compute, network, infrastructure)
+- Identifies threat actors (internal, external, misconfiguration, supply chain)
+- Assigns attack scenarios for each threat
+
+**APIs:**
+- REST API: `/health`, `/version`, `/rules`, `/analyze`, `/analyze/file`
+- GraphQL API: `/graphql` with Query (health, version, rules) and Mutation (analyze)
 
 Each rule is a function that receives a `Resource` object (normalised from whatever source format was parsed) and returns a `Threat` if the condition is met. Rules are plain Python conditionals — no DSL, no regex engine, no external ruleset files.
 
@@ -205,7 +327,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install threatmap
-        run: pip install -r requirements.txt && pip install -e .
+        run: pip install threatmap
 
       - name: Run threat model scan
         run: |
